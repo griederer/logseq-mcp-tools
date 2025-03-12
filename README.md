@@ -149,6 +149,114 @@ This tool will:
 - Extract and analyze referenced pages/concepts
 - Show the most frequently referenced concepts
 
+### createPage
+
+Creates a new page in your Logseq graph.
+
+Parameters:
+
+- `pageName`: Name for the new page
+- `content`: (Optional) Initial content for the page
+
+### searchPages
+
+Searches for pages by name.
+
+Parameters:
+
+- `query`: Search query to filter pages by name
+
+### getBacklinks
+
+Finds all pages that reference a specific page.
+
+Parameters:
+
+- `pageName`: The page name for which to find backlinks
+
+### analyzeGraph
+
+Performs a comprehensive analysis of your knowledge graph.
+
+Parameters:
+
+- `daysThreshold`: (Optional) Number of days to look back for "recent" content (default: 30)
+
+Features:
+
+- Identifies frequently referenced pages
+- Tracks recent updates
+- Discovers page clusters and connections
+- Lists outstanding tasks
+- Suggests potential updates needed
+
+### findKnowledgeGaps
+
+Analyzes your knowledge graph to identify potential gaps and areas for improvement.
+
+Parameters:
+
+- `minReferenceCount`: (Optional) Minimum references to consider (default: 3)
+- `includeOrphans`: (Optional) Include orphaned pages in analysis (default: true)
+
+Features:
+
+- Identifies missing pages that are frequently referenced
+- Finds underdeveloped pages that need expansion
+- Lists orphaned pages with no incoming links
+- Provides summary statistics
+
+### analyzeJournalPatterns
+
+Analyzes patterns in your journal entries over time.
+
+Parameters:
+
+- `timeframe`: (Optional) Time period to analyze (e.g., "last 30 days", "this year")
+- `includeMood`: (Optional) Analyze mood patterns if present (default: true)
+- `includeTopics`: (Optional) Analyze topic patterns (default: true)
+
+Features:
+
+- Topic trends and evolution
+- Mood pattern analysis
+- Habit tracking statistics
+- Project progress tracking
+
+### smartQuery
+
+Executes natural language queries using Logseq's DataScript capabilities.
+
+Parameters:
+
+- `request`: Natural language description of what you want to find
+- `includeQuery`: (Optional) Include the generated Datalog query in results
+- `advanced`: (Optional) Use advanced analysis features
+
+Features:
+
+- Page connections and relationships
+- Content clustering
+- Task progress analysis
+- Concept evolution tracking
+
+### suggestConnections
+
+Uses AI to analyze your graph and suggest interesting connections.
+
+Parameters:
+
+- `minConfidence`: (Optional) Minimum confidence score for suggestions (0-1, default: 0.6)
+- `maxSuggestions`: (Optional) Maximum number of suggestions to return (default: 10)
+- `focusArea`: (Optional) Topic or area to focus suggestions around
+
+Features:
+
+- Discovers potential connections between pages
+- Identifies knowledge synthesis opportunities
+- Suggests exploration paths based on recent interests
+- Provides confidence scores for suggestions
+
 ## Development
 
 The server is built using:
