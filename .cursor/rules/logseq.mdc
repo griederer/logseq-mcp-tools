@@ -1,0 +1,6 @@
+---
+description: logseq plugin api documentation
+globs: index.ts
+alwaysApply: false
+---
+- `./docs/logseq-plugins.txt` contains the relevant docs for logseq plugin api

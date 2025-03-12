@@ -1,0 +1,145 @@
+# Logseq API Reference - CRUD and Query Operations
+
+## Overview
+Logseq HTTP server runs at http://127.0.0.1:12315 and provides access to the Logseq plugin SDK API.
+
+## Authentication
+🔐 All API requests must provide a valid token in the Authorization header:
+```
+Authorization: Bearer your-valid-token-xxx
+```
+
+## API Request Format
+All requests use POST to the `/api` endpoint with a JSON body:
+```json
+{
+  "method": "logseq.Editor.methodName",
+  "args": [arg1, arg2, ...]
+}
+```
+
+## Page Operations
+These methods are part of the `logseq.Editor` namespace:
+
+### getAllPages
+```json
+{
+  "method": "logseq.Editor.getAllPages"
+}
+```
+Returns a list of all pages.
+
+### getPage
+```json
+{
+  "method": "logseq.Editor.getPage",
+  "args": ["page-name-or-id"]
+}
+```
+Returns a page object.
+
+### createPage
+```json
+{
+  "method": "logseq.Editor.createPage",
+  "args": ["page-name", {"property": "value"}]
+}
+```
+Creates a new page with optional properties.
+
+### deletePage
+```json
+{
+  "method": "logseq.Editor.deletePage",
+  "args": ["page-name-or-id"]
+}
+```
+Deletes the specified page.
+
+## Block Operations
+
+### getBlock
+```json
+{
+  "method": "logseq.Editor.getBlock",
+  "args": ["block-id"]
+}
+```
+Returns a block object.
+
+### getBlockProperties
+```json
+{
+  "method": "logseq.Editor.getBlockProperties",
+  "args": ["block-id"]
+}
+```
+Returns all properties of a block.
+
+### insertBlock
+```json
+{
+  "method": "logseq.Editor.insertBlock",
+  "args": ["parent-block-id", "content", {"property": "value"}]
+}
+```
+Inserts a new block.
+
+### updateBlock
+```json
+{
+  "method": "logseq.Editor.updateBlock",
+  "args": ["block-id", "new-content"]
+}
+```
+Updates a block's content.
+
+### removeBlock
+```json
+{
+  "method": "logseq.Editor.removeBlock",
+  "args": ["block-id"]
+}
+```
+Removes the specified block.
+
+### upsertBlockProperty
+```json
+{
+  "method": "logseq.Editor.upsertBlockProperty",
+  "args": ["block-id", "property-name", "property-value"]
+}
+```
+Creates or updates a block property.
+
+### removeBlockProperty
+```json
+{
+  "method": "logseq.Editor.removeBlockProperty",
+  "args": ["block-id", "property-name"]
+}
+```
+Removes a block property.
+
+## Query Operations
+
+### datascriptQuery
+```json
+{
+  "method": "logseq.DB.datascriptQuery",
+  "args": ["your-datalog-query"]
+}
+```
+Executes a DataScript query against the graph database.
+
+### q
+```json
+{
+  "method": "logseq.DB.q",
+  "args": ["your-datalog-query"]
+}
+```
+Shorthand for datascriptQuery.
+
+## Additional Information
+For complete API documentation, visit: https://plugins-doc.logseq.com

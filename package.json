@@ -1,0 +1,34 @@
+{
+	"name": "logseq-mcp-tools",
+	"version": "1.0.0",
+	"description": "Model Context Protocol server for Logseq knowledge graph integration",
+	"main": "index.ts",
+	"type": "module",
+	"scripts": {
+		"start": "tsx index.ts",
+		"dev": "tsx watch index.ts",
+		"test": "echo \"No tests configured\""
+	},
+	"keywords": [
+		"logseq",
+		"mcp",
+		"model-context-protocol",
+		"claude",
+		"ai",
+		"knowledge-graph"
+	],
+	"author": "",
+	"license": "MIT",
+	"dependencies": {
+		"@logseq/libs": "^0.0.17",
+		"@modelcontextprotocol/sdk": "^1.7.0",
+		"@types/node": "^22.13.10",
+		"dotenv": "^16.4.7",
+		"zod": "^3.24.2"
+	},
+	"devDependencies": {
+		"tsx": "^4.7.0",
+		"typescript": "^5.3.3"
+	},
+	"packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
+}

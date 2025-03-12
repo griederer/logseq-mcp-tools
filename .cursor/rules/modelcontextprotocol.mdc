@@ -1,0 +1,6 @@
+---
+description: model context protocol typescript sdk documentation
+globs: index.ts
+alwaysApply: false
+---
+- `./docs/modelcontextprotocol-typescriptsdk-docs.md` mcp TS docs for muilding a model context protocol (mcp) service
