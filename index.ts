@@ -40,7 +40,7 @@ function getDaySuffix(day: number): string {
 }
 
 // Helper function to make API calls to Logseq
-async function callLogseqApi(method: string, args: any[] = []) {
+async function callLogseqApi(method: string, args: any[] = []): Promise<any> {
 	const response = await fetch('http://127.0.0.1:12315/api', {
 		method: 'POST',
 		headers: {
@@ -60,6 +60,76 @@ async function callLogseqApi(method: string, args: any[] = []) {
 	}
 
 	return response.json()
+}
+
+// Helper function to add content to a page by creating blocks
+async function addContentToPage(
+	pageName: string,
+	content: string
+): Promise<void> {
+	try {
+		// First get the page to ensure it exists
+		const page = await callLogseqApi('logseq.Editor.getPage', [pageName])
+
+		if (!page) {
+			throw new Error(`Page ${pageName} does not exist`)
+		}
+
+		// Get the page's blocks
+		const blocks = await callLogseqApi('logseq.Editor.getPageBlocksTree', [
+			pageName,
+		])
+
+		// If the page is empty, create initial block
+		if (!blocks || blocks.length === 0) {
+			await callLogseqApi('logseq.Editor.appendBlockInPage', [
+				pageName,
+				content,
+			])
+			return
+		}
+
+		// If the page already has content, append to it
+		// For more complex content structures, we might need to parse the content
+		// and add blocks one by one with proper hierarchy
+		const contentLines = content
+			.split('\n')
+			.filter((line) => line.trim() !== '')
+
+		for (const line of contentLines) {
+			await callLogseqApi('logseq.Editor.appendBlockInPage', [pageName, line])
+		}
+	} catch (error) {
+		console.error(`Error adding content to page ${pageName}:`, error)
+		throw error
+	}
+}
+
+// Check if a string represents a journal page date
+function isJournalDate(pageName: string): boolean {
+	// Journal pages typically have formats like "Mar 14th, 2025"
+	// This regex matches common journal date formats
+	const journalDateRegex =
+		/^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+\d{1,2}(st|nd|rd|th)?,\s+\d{4}$/i
+	return journalDateRegex.test(pageName)
+}
+
+// Parse text content into a blocks structure for journal pages
+function parseContentToBlocks(content: string): Array<{ content: string }> {
+	const lines = content.split('\n').filter((line) => line.trim() !== '')
+	const blocks: Array<{ content: string }> = []
+
+	for (const line of lines) {
+		// Skip heading lines (usually the date)
+		if (line.startsWith('#') || line.trim() === '') continue
+
+		// Create a block for each line
+		blocks.push({
+			content: line,
+		})
+	}
+
+	return blocks
 }
 
 // Helper function to parse date range from natural language
@@ -432,14 +502,77 @@ server.tool(
 	},
 	async ({ pageName, content }) => {
 		try {
-			await callLogseqApi('logseq.Editor.createPage', [pageName, content || ''])
-			return {
-				content: [
-					{
-						type: 'text',
-						text: `Page "${pageName}" successfully created.`,
-					},
-				],
+			// Check if this is a journal page
+			const isJournal = isJournalDate(pageName)
+
+			// For journal pages, we need special handling
+			if (isJournal) {
+				try {
+					// First, try to get the page to see if it exists
+					const existingPage = await callLogseqApi('logseq.Editor.getPage', [
+						pageName,
+					])
+
+					if (existingPage) {
+						// If the page exists and we have content, append to it
+						if (content) {
+							// For journal pages, we need to properly parse the content into blocks
+							// This will depend on the format of your content
+							// For now, we'll use a simple append approach
+							await addContentToPage(pageName, content)
+						}
+
+						return {
+							content: [
+								{
+									type: 'text',
+									text: `Journal page "${pageName}" updated successfully.`,
+								},
+							],
+						}
+					}
+				} catch (e) {
+					// Page doesn't exist, we'll create it below
+					console.log(`Journal page ${pageName} doesn't exist yet, creating...`)
+				}
+
+				// Create the journal page
+				// Set journal? property to true to make it a proper journal page
+				await callLogseqApi('logseq.Editor.createPage', [
+					pageName,
+					{ 'journal?': true },
+				])
+
+				// If we have content, add it to the new page
+				if (content) {
+					await addContentToPage(pageName, content)
+				}
+
+				return {
+					content: [
+						{
+							type: 'text',
+							text: `Journal page "${pageName}" successfully created.`,
+						},
+					],
+				}
+			} else {
+				// Regular page creation
+				await callLogseqApi('logseq.Editor.createPage', [pageName, {}])
+
+				// If we have content, add it to the new page
+				if (content) {
+					await addContentToPage(pageName, content)
+				}
+
+				return {
+					content: [
+						{
+							type: 'text',
+							text: `Page "${pageName}" successfully created.`,
+						},
+					],
+				}
 			}
 		} catch (error) {
 			return {
@@ -566,6 +699,101 @@ server.tool(
 					{
 						type: 'text',
 						text: `Error fetching backlinks: ${error.message}`,
+					},
+				],
+			}
+		}
+	}
+)
+
+server.tool(
+	'addJournalEntry',
+	{
+		content: z
+			.string()
+			.describe("Content to add to today's journal or a specified date"),
+		date: z
+			.string()
+			.optional()
+			.describe(
+				'Optional date format (e.g., "mar 14th, 2025"). Defaults to today'
+			),
+		asBlock: z
+			.boolean()
+			.optional()
+			.describe('Whether to add as a single block (default: true)'),
+	},
+	async ({ content, date, asBlock = true }) => {
+		try {
+			// Determine the journal page name (today or specific date)
+			let pageName = date || formatJournalDate(new Date())
+
+			// Check if this page exists and is a journal page
+			let pageExists = false
+			try {
+				const existingPage = await callLogseqApi('logseq.Editor.getPage', [
+					pageName,
+				])
+				pageExists = !!existingPage
+			} catch (e) {
+				// Page doesn't exist, we'll create it
+				console.log(`Journal page ${pageName} doesn't exist yet, creating...`)
+			}
+
+			// If page doesn't exist, create it first
+			if (!pageExists) {
+				await callLogseqApi('logseq.Editor.createPage', [
+					pageName,
+					{ 'journal?': true },
+				])
+			}
+
+			// Clean up content if needed
+			let cleanContent = content
+
+			// If we're adding as a single block and content has multiple lines,
+			// we need to preserve the content exactly as is without any processing
+			if (asBlock) {
+				// Remove any leading/trailing whitespace
+				cleanContent = content.trim()
+
+				// Remove the title/heading if it's the same as the page name (to avoid duplication)
+				const titleRegex = new RegExp(`^#\\s+${pageName}\\s*$`, 'im')
+				cleanContent = cleanContent.replace(titleRegex, '').trim()
+
+				// Add the content as a single block
+				await callLogseqApi('logseq.Editor.appendBlockInPage', [
+					pageName,
+					cleanContent,
+				])
+
+				return {
+					content: [
+						{
+							type: 'text',
+							text: `Added journal entry to "${pageName}" as a single block.`,
+						},
+					],
+				}
+			} else {
+				// For multi-block approach, use the pre-existing function (though not recommended)
+				await addContentToPage(pageName, cleanContent)
+
+				return {
+					content: [
+						{
+							type: 'text',
+							text: `Added journal entry to "${pageName}" as multiple blocks.`,
+						},
+					],
+				}
+			}
+		} catch (error) {
+			return {
+				content: [
+					{
+						type: 'text',
+						text: `Error adding journal entry: ${error.message}`,
 					},
 				],
 			}
@@ -1910,6 +2138,707 @@ server.tool(
 					{
 						type: 'text',
 						text: `Error generating suggestions: ${error.message}`,
+					},
+				],
+			}
+		}
+	}
+)
+
+// Parse Markdown content into a structured blocks tree
+function parseMarkdownToBlocksTree(content: string): any[] {
+	// Split content into lines
+	const lines = content.split('\n')
+
+	// Create a tree structure
+	const root: any[] = []
+	const stack: { blocks: any[]; level: number }[] = [
+		{ blocks: root, level: -1 },
+	]
+
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i]
+		if (!line.trim()) continue
+
+		// Count indentation level (number of leading spaces)
+		const match = line.match(/^(\s*)-\s/)
+
+		// If not a list item format (no bullet), we can just add it as-is
+		if (!match) {
+			stack[0].blocks.push({
+				content: line.trim(),
+				children: [],
+			})
+			continue
+		}
+
+		const indent = match[1].length
+		const currentLevel = Math.floor(indent / 2) // Assume 2 spaces per indent level
+		const content = line.replace(/^\s*-\s/, '').trim()
+
+		// Create new block
+		const newBlock = {
+			content,
+			children: [],
+		}
+
+		// Find the appropriate parent in the stack
+		while (stack.length > 1 && stack[stack.length - 1].level >= currentLevel) {
+			stack.pop()
+		}
+
+		// Add the block to its parent
+		stack[stack.length - 1].blocks.push(newBlock)
+
+		// Add this block to the stack
+		stack.push({
+			blocks: newBlock.children,
+			level: currentLevel,
+		})
+	}
+
+	return root
+}
+
+// Helper function to insert a block tree into Logseq
+async function insertBlocksTree(
+	parentUuid: string,
+	blocks: any[]
+): Promise<void> {
+	if (!blocks || blocks.length === 0) return
+
+	for (const block of blocks) {
+		// Insert the current block
+		const response = await callLogseqApi('logseq.Editor.insertBlock', [
+			parentUuid,
+			block.content,
+			{
+				before: false, // After parent block
+			},
+		])
+
+		if (response.uuid && block.children && block.children.length > 0) {
+			// Insert children recursively
+			await insertBlocksTree(response.uuid, block.children)
+		}
+	}
+}
+
+// Helper function to insert block content while properly handling Logseq's bullet format
+async function insertFormattedContent(
+	pageName: string,
+	content: string
+): Promise<string> {
+	try {
+		// 1. Create a top-level block as "container"
+		const pageResult = await callLogseqApi('logseq.Editor.getPage', [pageName])
+		if (!pageResult) {
+			throw new Error(`Page ${pageName} not found`)
+		}
+
+		// Get the page blocks to check if it has content
+		const pageBlocks = await callLogseqApi('logseq.Editor.getPageBlocksTree', [
+			pageName,
+		])
+
+		// 2. Clean up content - remove any explicit bullets at the start of lines
+		// This is critical - we need to remove the bullet markers since Logseq adds them automatically
+		const cleanContent = content
+			.split('\n')
+			.map((line) => {
+				// Remove bullet markers while preserving indentation
+				return line.replace(/^(\s*)-\s+/, '$1')
+			})
+			.join('\n')
+
+		// 3. Create a properly nested block structure from the hierarchical content
+		const blocks = parseHierarchicalContent(cleanContent)
+
+		// 4. Insert the first block at the page level (top level)
+		let insertedBlockUuid = ''
+
+		// If the content is already structured with indentation, use our special handling
+		if (blocks.length > 0) {
+			// Insert the first block
+			const firstBlock = await callLogseqApi(
+				'logseq.Editor.appendBlockInPage',
+				[pageName, blocks[0].content]
+			)
+
+			if (!firstBlock || !firstBlock.uuid) {
+				throw new Error('Failed to insert initial block')
+			}
+
+			insertedBlockUuid = firstBlock.uuid
+
+			// Insert child blocks recursively
+			if (blocks[0].children && blocks[0].children.length > 0) {
+				await insertChildBlocks(insertedBlockUuid, blocks[0].children)
+			}
+
+			// Insert any remaining top-level blocks
+			for (let i = 1; i < blocks.length; i++) {
+				const blockResponse = await callLogseqApi(
+					'logseq.Editor.appendBlockInPage',
+					[pageName, blocks[i].content]
+				)
+
+				if (
+					blockResponse &&
+					blockResponse.uuid &&
+					blocks[i].children &&
+					blocks[i].children.length > 0
+				) {
+					await insertChildBlocks(blockResponse.uuid, blocks[i].children)
+				}
+			}
+
+			return insertedBlockUuid
+		} else {
+			// Fallback for simple content - insert as a single block
+			const response = await callLogseqApi('logseq.Editor.appendBlockInPage', [
+				pageName,
+				cleanContent,
+			])
+
+			return response?.uuid || ''
+		}
+	} catch (error) {
+		console.error('Error inserting formatted content:', error)
+		throw error
+	}
+}
+
+// Helper function to insert child blocks recursively
+async function insertChildBlocks(
+	parentUuid: string,
+	blocks: any[]
+): Promise<void> {
+	for (const block of blocks) {
+		const blockResponse = await callLogseqApi('logseq.Editor.insertBlock', [
+			parentUuid,
+			block.content,
+			{ sibling: false }, // Insert as child, not sibling
+		])
+
+		if (blockResponse?.uuid && block.children && block.children.length > 0) {
+			await insertChildBlocks(blockResponse.uuid, block.children)
+		}
+	}
+}
+
+// Define proper block type at the top of the file
+interface Block {
+	content: string
+	children: Block[]
+}
+
+// Parse hierarchical content based on indentation
+function parseHierarchicalContent(content: string): Block[] {
+	const lines = content.split('\n')
+	const result: Block[] = []
+	let stack: { block: Block; level: number }[] = []
+	let currentLevel = 0
+
+	for (const line of lines) {
+		if (!line.trim()) continue
+
+		// Calculate indentation level (number of leading spaces)
+		const indentMatch = line.match(/^(\s*)/)
+		const indentLevel = indentMatch ? Math.floor(indentMatch[1].length / 2) : 0
+
+		// Create block for this line
+		const block: Block = {
+			content: line.trim(),
+			children: [],
+		}
+
+		if (indentLevel === 0) {
+			// Top-level block
+			result.push(block)
+			stack = [{ block, level: 0 }]
+		} else if (indentLevel > currentLevel) {
+			// Child of previous block
+			if (stack.length > 0) {
+				stack[stack.length - 1].block.children.push(block)
+				stack.push({ block, level: indentLevel })
+			}
+		} else {
+			// Find appropriate parent
+			while (stack.length > 1 && stack[stack.length - 1].level >= indentLevel) {
+				stack.pop()
+			}
+
+			if (stack.length > 0) {
+				stack[stack.length - 1].block.children.push(block)
+				stack.push({ block, level: indentLevel })
+			}
+		}
+
+		currentLevel = indentLevel
+	}
+
+	return result
+}
+
+// Recursive function to insert blocks
+async function insertBlocksRecursively(
+	page: string,
+	parentUuid: string | null,
+	blocks: Block[]
+): Promise<void> {
+	for (const block of blocks) {
+		const blockUuid = await callLogseqApi('logseq.Editor.insertBlock', [
+			page,
+			block.content,
+			{
+				sibling: false,
+				before: false,
+				isPageBlock: !parentUuid,
+				uuid: parentUuid,
+			},
+		])
+
+		if (blockUuid && block.children.length > 0) {
+			await insertBlocksRecursively(page, blockUuid, block.children)
+		}
+	}
+}
+
+// Fix the unnecessary template literals
+function formatBlockContent(content: string): string {
+	return content.replace(/^- /gm, '').trim()
+}
+
+server.tool(
+	'addJournalBlock',
+	{
+		content: z
+			.string()
+			.describe('Content to add as a single block to a journal page'),
+		date: z
+			.string()
+			.optional()
+			.describe(
+				'Optional journal date (e.g., "mar 14th, 2025"). Defaults to today'
+			),
+		preserveFormatting: z
+			.boolean()
+			.optional()
+			.describe('Whether to preserve markdown formatting (default: true)'),
+	},
+	async ({ content, date, preserveFormatting = true }) => {
+		try {
+			// Determine the journal page name (today or specific date)
+			const pageName = date || formatJournalDate(new Date())
+
+			// Check if this page exists, create if needed
+			let pageExists = false
+			try {
+				const existingPage = await callLogseqApi('logseq.Editor.getPage', [
+					pageName,
+				])
+				pageExists = !!existingPage
+			} catch (e) {
+				// Page doesn't exist, we'll create it
+				console.log(`Journal page ${pageName} doesn't exist yet, creating...`)
+			}
+
+			// Create the journal page if it doesn't exist
+			if (!pageExists) {
+				await callLogseqApi('logseq.Editor.createPage', [
+					pageName,
+					{ 'journal?': true },
+				])
+			}
+
+			// Clean up content
+			let cleanContent = content.trim()
+
+			// Remove the title/heading if it's the same as the page name (to avoid duplication)
+			const titleRegex = new RegExp(`^#\\s+${pageName}\\s*$`, 'im')
+			cleanContent = cleanContent.replace(titleRegex, '').trim()
+
+			if (preserveFormatting) {
+				// Get the page's UUID
+				const page = await callLogseqApi('logseq.Editor.getPage', [pageName])
+				if (!page || !page.uuid) {
+					throw new Error(`Could not get UUID for page ${pageName}`)
+				}
+
+				// Add a single top-level block first
+				const response = await callLogseqApi(
+					'logseq.Editor.appendBlockInPage',
+					[pageName, 'Journal entry from MCP']
+				)
+
+				if (!response || !response.uuid) {
+					throw new Error('Failed to create initial block')
+				}
+
+				// Insert the content as a child block to preserve its formatting exactly
+				// Use insertBlock instead of appendBlockInPage to maintain hierarchy
+				const blockResponse = await callLogseqApi('logseq.Editor.insertBlock', [
+					response.uuid,
+					cleanContent,
+					{ properties: {} },
+				])
+
+				// Now remove the placeholder parent block to leave just our content
+				await callLogseqApi('logseq.Editor.removeBlock', [response.uuid])
+
+				return {
+					content: [
+						{
+							type: 'text',
+							text: `Added journal entry to "${pageName}" as a properly formatted block.`,
+						},
+					],
+				}
+			} else {
+				// Simple append as a basic block
+				await callLogseqApi('logseq.Editor.appendBlockInPage', [
+					pageName,
+					cleanContent,
+				])
+
+				return {
+					content: [
+						{
+							type: 'text',
+							text: `Added journal entry to "${pageName}" as a basic block.`,
+						},
+					],
+				}
+			}
+		} catch (error) {
+			return {
+				content: [
+					{
+						type: 'text',
+						text: `Error adding journal block: ${error.message}`,
+					},
+				],
+			}
+		}
+	}
+)
+
+server.tool(
+	'addJournalContent',
+	{
+		content: z
+			.string()
+			.describe('Content to add to the journal page (preserves formatting)'),
+		date: z
+			.string()
+			.optional()
+			.describe(
+				'Optional date format (e.g., "mar 14th, 2025"). Defaults to today'
+			),
+	},
+	async ({ content, date }) => {
+		try {
+			// Determine journal page name
+			const pageName = date || formatJournalDate(new Date())
+
+			// Create journal page if it doesn't exist
+			let pageExists = false
+			try {
+				const existingPage = await callLogseqApi('logseq.Editor.getPage', [
+					pageName,
+				])
+				pageExists = !!existingPage
+			} catch (e) {
+				console.log(`Journal page ${pageName} doesn't exist yet, creating...`)
+			}
+
+			if (!pageExists) {
+				await callLogseqApi('logseq.Editor.createPage', [
+					pageName,
+					{ 'journal?': true },
+				])
+			}
+
+			// Clean up content to handle common issues
+			let cleanContent = content.trim()
+
+			// Remove page title/heading if it matches the page name
+			const titleRegex = new RegExp(`^#\\s+${pageName}\\s*$`, 'im')
+			cleanContent = cleanContent.replace(titleRegex, '').trim()
+
+			// Insert the content with proper formatting
+			await insertFormattedContent(pageName, cleanContent)
+
+			return {
+				content: [
+					{
+						type: 'text',
+						text: `Successfully added formatted content to journal page "${pageName}".`,
+					},
+				],
+			}
+		} catch (error) {
+			return {
+				content: [
+					{
+						type: 'text',
+						text: `Error adding journal content: ${error.message}`,
+					},
+				],
+			}
+		}
+	}
+)
+
+// Add a tool to add formatted content to any note with proper structure preservation
+server.tool(
+	'addNoteContent',
+	{
+		pageName: z.string().describe('The name of the page to add content to'),
+		content: z
+			.string()
+			.describe('Content to add to the page, with Markdown formatting'),
+		createIfNotExist: z
+			.boolean()
+			.default(true)
+			.describe('Whether to create the page if it does not exist'),
+	},
+	async ({ pageName, content, createIfNotExist }) => {
+		try {
+			// Check if the page exists
+			const page = await callLogseqApi('logseq.Editor.getPage', [pageName])
+
+			if (!page && createIfNotExist) {
+				// Create page if it doesn't exist
+				await callLogseqApi('logseq.Editor.createPage', [
+					pageName,
+					{},
+					{ createFirstBlock: true },
+				])
+			} else if (!page) {
+				return {
+					content: [
+						{
+							type: 'text',
+							text: `Page "${pageName}" does not exist and createIfNotExist is false`,
+						},
+					],
+				}
+			}
+
+			// Clean up content to make sure it doesn't have bullet points
+			const cleanContent = content
+				.split('\n')
+				.map((line) => line.replace(/^(\s*)-\s+/, '$1'))
+				.join('\n')
+
+			// Parse the content into a hierarchical structure
+			const blocks = parseHierarchicalContent(cleanContent)
+
+			// Count total blocks for feedback
+			const totalBlocks = countBlocks(blocks)
+
+			// Insert the blocks
+			if (blocks.length > 0) {
+				// Different handling based on content complexity
+				if (blocks.length === 1 && blocks[0].children.length === 0) {
+					// Simple content - just append as a single block
+					await callLogseqApi('logseq.Editor.appendBlockInPage', [
+						pageName,
+						blocks[0].content,
+					])
+				} else {
+					// Complex content with hierarchy - use the structured insertion
+					for (const block of blocks) {
+						const firstBlock = await callLogseqApi(
+							'logseq.Editor.appendBlockInPage',
+							[pageName, block.content]
+						)
+
+						if (block.children.length > 0 && firstBlock && firstBlock.uuid) {
+							// Insert child blocks recursively
+							await insertChildBlocks(firstBlock.uuid, block.children)
+						}
+					}
+				}
+			}
+
+			return {
+				content: [
+					{
+						type: 'text',
+						text: `Content added to "${pageName}" successfully (${totalBlocks} block${
+							totalBlocks !== 1 ? 's' : ''
+						})`,
+					},
+				],
+			}
+		} catch (error: any) {
+			return {
+				content: [
+					{
+						type: 'text',
+						text: `Error adding content: ${error.message}`,
+					},
+				],
+			}
+		}
+	}
+)
+
+// Helper function to count total blocks in a hierarchical structure
+function countBlocks(blocks: Block[]): number {
+	let count = blocks.length
+
+	for (const block of blocks) {
+		count += countBlocks(block.children)
+	}
+
+	return count
+}
+
+// Add a tool to get a specific block and its children by UUID
+server.tool(
+	'getBlock',
+	{
+		blockId: z
+			.string()
+			.describe(
+				'The UUID of the block to fetch (without the double parentheses)'
+			),
+		includeChildren: z
+			.boolean()
+			.default(true)
+			.describe('Whether to include children blocks'),
+	},
+	async ({ blockId, includeChildren }) => {
+		try {
+			// Clean the block ID if it includes parentheses
+			const cleanBlockId = blockId.replace(/^\(\(|\)\)$/g, '')
+
+			// Fetch the block using the Logseq API
+			const block = await callLogseqApi('logseq.Editor.getBlock', [
+				cleanBlockId,
+				{ includeChildren },
+			])
+
+			if (!block) {
+				return {
+					content: [
+						{
+							type: 'text',
+							text: `Block with ID ${cleanBlockId} not found`,
+						},
+					],
+				}
+			}
+
+			// Format the result for display
+			const formatBlockContent = (block, level = 0) => {
+				const indent = '  '.repeat(level)
+				let result = `${indent}- ${block.content}\n`
+
+				if (block.children && block.children.length > 0) {
+					for (const child of block.children) {
+						result += formatBlockContent(child, level + 1)
+					}
+				}
+
+				return result
+			}
+
+			// Get parent info safely
+			let parentInfo = 'None'
+			if (block.parent) {
+				// Handle different formats of parent reference
+				if (typeof block.parent === 'string') {
+					parentInfo = block.parent.substring(0, 8) + '...'
+				} else if (block.parent.id && typeof block.parent.id === 'string') {
+					parentInfo = block.parent.id.substring(0, 8) + '...'
+				} else if (block.parent.uuid && typeof block.parent.uuid === 'string') {
+					parentInfo = block.parent.uuid.substring(0, 8) + '...'
+				} else {
+					parentInfo = 'Unknown format'
+				}
+			}
+
+			// Get page info safely
+			let pageName = 'Unknown page'
+			if (block.page) {
+				if (typeof block.page === 'string') {
+					pageName = block.page
+				} else if (block.page.name && typeof block.page.name === 'string') {
+					pageName = block.page.name
+				} else if (
+					block.page.originalName &&
+					typeof block.page.originalName === 'string'
+				) {
+					pageName = block.page.originalName
+				}
+			}
+
+			const blockWithMeta = {
+				...block,
+				_meta: {
+					page: pageName,
+					parentBlock: parentInfo,
+					createdAt: block.createdAt
+						? new Date(block.createdAt).toLocaleString()
+						: 'Unknown',
+					updatedAt: block.updatedAt
+						? new Date(block.updatedAt).toLocaleString()
+						: 'Unknown',
+				},
+			}
+
+			return {
+				content: [
+					{
+						type: 'text',
+						text: `Block ID: ${cleanBlockId}`,
+					},
+					{
+						type: 'text',
+						text: `Page: ${blockWithMeta._meta.page}`,
+					},
+					{
+						type: 'text',
+						text: `Parent Block: ${blockWithMeta._meta.parentBlock}`,
+					},
+					{
+						type: 'text',
+						text: `Created: ${blockWithMeta._meta.createdAt}`,
+					},
+					{
+						type: 'text',
+						text: `Updated: ${blockWithMeta._meta.updatedAt}`,
+					},
+					{
+						type: 'text',
+						text: '---',
+					},
+					{
+						type: 'text',
+						text: includeChildren
+							? formatBlockContent(block)
+							: `- ${block.content}`,
+					},
+				],
+			}
+		} catch (error: any) {
+			console.error('Error details:', error)
+			return {
+				content: [
+					{
+						type: 'text',
+						text: `Error fetching block: ${error.message}`,
+					},
+					{
+						type: 'text',
+						text:
+							'Try using the blockId without double parentheses: ' +
+							blockId.replace(/^\(\(|\)\)$/g, ''),
 					},
 				],
 			}
