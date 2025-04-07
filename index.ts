@@ -289,6 +289,18 @@ server.tool(
 
 			formattedContent += processBlocks(content)
 
+			// --- Fetch and add backlinks ---
+			const backlinks = await findBacklinks(pageName)
+			if (backlinks.length > 0) {
+				formattedContent += `\n\n## Backlinks\n\n`
+				backlinks.forEach((backlinkPageName) => {
+					formattedContent += `- [[${backlinkPageName}]]\n`
+				})
+			} else {
+				formattedContent += '\n\n## Backlinks\n\nNo backlinks found.\n'
+			}
+			// --- End backlinks ---
+
 			return {
 				content: [
 					{
@@ -634,6 +646,43 @@ server.tool(
 	}
 )
 
+// Helper function to get backlinks for a page
+async function findBacklinks(pageName: string): Promise<string[]> {
+	const pages = await callLogseqApi('logseq.Editor.getAllPages')
+	const backlinkPages: string[] = []
+
+	// Helper function to process blocks into text
+	function processBlocks(blocks: any[], indent = 0): string {
+		let text = ''
+		for (const block of blocks) {
+			if (block.content) {
+				text += `${'  '.repeat(indent)}${block.content}\n`
+				if (block.children && block.children.length > 0) {
+					text += processBlocks(block.children, indent + 1)
+				}
+			}
+		}
+		return text
+	}
+
+	for (const page of pages) {
+		// Skip the page itself and pages without names
+		if (!page.name || page.name === pageName) continue
+
+		const content = await getPageContent(page.name)
+		if (!content) continue
+
+		const contentText = processBlocks(content)
+		const linkRegex = new RegExp(`\[\[\\s*${pageName}\\s*\]\]`, 'i') // Case-insensitive matching
+
+		if (linkRegex.test(contentText)) {
+			backlinkPages.push(page.name)
+		}
+	}
+
+	return backlinkPages
+}
+
 server.tool(
 	'getBacklinks',
 	{
@@ -641,34 +690,7 @@ server.tool(
 	},
 	async ({ pageName }) => {
 		try {
-			const pages = await callLogseqApi('logseq.Editor.getAllPages')
-
-			const backlinkPages: string[] = []
-
-			// Helper function to process blocks into text
-			function processBlocks(blocks: any[], indent = 0) {
-				let text = ''
-				for (const block of blocks) {
-					if (block.content) {
-						text += `${'  '.repeat(indent)}${block.content}\n`
-						if (block.children && block.children.length > 0) {
-							text += processBlocks(block.children, indent + 1)
-						}
-					}
-				}
-				return text
-			}
-
-			for (const page of pages) {
-				if (page.name === pageName) continue
-				const content = await getPageContent(page.name)
-				if (!content) continue
-				const contentText = processBlocks(content)
-				const linkRegex = new RegExp(`\\[\\[\\s*${pageName}\\s*\\]\]`)
-				if (linkRegex.test(contentText)) {
-					backlinkPages.push(page.name)
-				}
-			}
+			const backlinkPages = await findBacklinks(pageName) // Use the helper function
 
 			if (backlinkPages.length === 0) {
 				return {
@@ -683,7 +705,7 @@ server.tool(
 
 			let resultText = `Pages referencing "${pageName}":\n`
 			backlinkPages.forEach((name) => {
-				resultText += `- ${name}\n`
+				resultText += `- [[${name}]]\n` // Use Logseq link format
 			})
 			return {
 				content: [
@@ -1550,7 +1572,9 @@ server.tool(
 // Helper function for DataScript queries
 async function queryGraph(query: string): Promise<any[]> {
 	try {
-		return await callLogseqApi('logseq.DB.datascriptQuery', [query])
+		const response = await callLogseqApi('logseq.DB.datascriptQuery', [query])
+		// Ensure the response is actually an array before returning
+		return Array.isArray(response) ? response : []
 	} catch (error) {
 		console.error('DataScript query error:', error)
 		return []
@@ -1625,6 +1649,19 @@ const QUERY_TEMPLATES = {
 		 [?b :block/refs ?p]
 		 [?b :block/created-at ?t]
 		 [(not ?p :block/journal?)]]
+	`,
+	taskQueryWithTime: `
+		[:find ?page-name ?content ?marker ?date
+		 :where
+		 [?b :block/marker ?marker]
+		 [(contains? #{"TODO" "LATER" "NOW" "DOING"} ?marker)] ; Filter by specific task markers
+		 [?b :block/content ?content]
+		 [?b :block/page ?p]
+		 [?p :block/name ?page-name]
+		 [?b :block/updated-at ?t] ; Use updated-at for recency
+		 [(> ?t ?start-time)] ; Filter by time
+		 [?p :block/journal-day ?date] ; Include journal date
+		]
 	`,
 }
 
@@ -1714,10 +1751,12 @@ server.tool(
 				explanation = 'Analyzing task and project progress'
 
 				const tasksByState = new Map()
-				results.forEach(([page, content, state]) => {
-					if (!tasksByState.has(state)) tasksByState.set(state, [])
-					tasksByState.get(state).push([page, content])
-				})
+				if (Array.isArray(results)) {
+					results.forEach(([page, content, state]) => {
+						if (!tasksByState.has(state)) tasksByState.set(state, [])
+						tasksByState.get(state).push([page, content])
+					})
+				}
 
 				insights = '\n## Task Analysis\n\n'
 				for (const [state, tasks] of tasksByState) {
@@ -1755,6 +1794,43 @@ server.tool(
 					})
 					insights += '\n'
 				})
+			} else if (
+				(req.includes('task') ||
+					req.includes('todo') ||
+					req.includes('later') ||
+					req.includes('now')) &&
+				req.match(/(\d+)\s+days?/)
+			) {
+				const daysMatch = req.match(/(\d+)\s+days?/)
+				const daysAgo = daysMatch ? parseInt(daysMatch[1], 10) : 14 // Default to 14 days
+				const startTime = Date.now() - daysAgo * 24 * 60 * 60 * 1000
+
+				query = QUERY_TEMPLATES.taskQueryWithTime.replace(
+					'?start-time',
+					startTime.toString()
+				)
+				results = await queryGraph(query)
+				explanation = `Finding TODO, LATER, or NOW tasks updated in the last ${daysAgo} days`
+
+				const tasksByMarker = new Map()
+				if (Array.isArray(results)) {
+					results.forEach(([page, content, marker, date]) => {
+						const formattedDate = date
+							? formatJournalDate(new Date(date))
+							: page // Fallback to page name if date is missing
+						if (!tasksByMarker.has(marker)) tasksByMarker.set(marker, [])
+						tasksByMarker.get(marker).push({ page: formattedDate, content })
+					})
+				}
+
+				insights = '\n## Tasks by Status\n\n'
+				for (const [marker, tasks] of tasksByMarker) {
+					insights += `### ${marker}\n`
+					tasks.forEach(({ page, content }) => {
+						insights += `- ${content} (from [[${page}]])\n`
+					})
+					insights += '\n'
+				}
 			} else {
 				// Fall back to basic queries
 				if (req.includes('recent') || req.includes('modified')) {
@@ -1781,17 +1857,21 @@ server.tool(
 				response += 'No results found.\n'
 			} else {
 				response += '## Results\n\n'
-				results.slice(0, 20).forEach((result) => {
-					if (Array.isArray(result)) {
-						if (result.length === 2 && typeof result[1] === 'number') {
-							response += `- [[${result[0]}]] (${result[1]} references)\n`
+				if (Array.isArray(results)) {
+					results.slice(0, 20).forEach((result) => {
+						if (Array.isArray(result)) {
+							if (result.length === 2 && typeof result[1] === 'number') {
+								response += `- [[${result[0]}]] (${result[1]} references)\n`
+							} else {
+								response += `- ${result.join(' → ')}\n`
+							}
 						} else {
-							response += `- ${result.join(' → ')}\n`
+							response += `- ${JSON.stringify(result)}\n`
 						}
-					} else {
-						response += `- ${JSON.stringify(result)}\n`
-					}
-				})
+					})
+				} else {
+					response += 'Error: Query did not return an array of results.\n'
+				}
 			}
 
 			// Add insights if available
