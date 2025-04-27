@@ -1,5 +1,7 @@
 # Logseq MCP Tools
 
+[![smithery badge](https://smithery.ai/badge/@joelhooks/logseq-mcp-tools)](https://smithery.ai/server/@joelhooks/logseq-mcp-tools)
+
 A Model Context Protocol (MCP) server that provides AI assistants with structured access to your Logseq knowledge graph.
 
 ## Overview
@@ -12,6 +14,14 @@ This project creates an MCP server that allows AI assistants like Claude to inte
 - Extracting linked pages and exploring connections
 
 ## Installation
+
+### Installing via Smithery
+
+To install Logseq Tools for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@joelhooks/logseq-mcp-tools):
+
+```bash
+npx -y @smithery/cli install @joelhooks/logseq-mcp-tools --client claude
+```
 
 1. Clone this repository
 2. Install dependencies using npm, yarn, or pnpm:
