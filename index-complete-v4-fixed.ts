@@ -1168,11 +1168,49 @@ server.registerTool("delete_block", {
 				
 				// Find the line containing this block's content
 				let lineToDelete = -1
+				
+				// Try multiple strategies to find the line
 				for (let i = 0; i < lines.length; i++) {
-					const line = lines[i].trim()
-					// Look for the block content in the file
-					if (line.includes(block.content) && 
-					    (line.startsWith('- ') || line.startsWith('* ') || line.startsWith('+ '))) {
+					const line = lines[i]
+					const trimmedLine = line.trim()
+					
+					// Strategy 1: Look for UUID at the beginning (most reliable for new blocks)
+					const shortUuid = block.uuid.slice(0, 8)
+					if (trimmedLine.startsWith(`- ${shortUuid} `) || 
+					    trimmedLine.startsWith(`* ${shortUuid} `) || 
+					    trimmedLine.startsWith(`+ ${shortUuid} `)) {
+						lineToDelete = i
+						break
+					}
+					
+					// Strategy 2: Exact content match with bullet points
+					if (trimmedLine.includes(block.content) && 
+					    (trimmedLine.startsWith('- ') || trimmedLine.startsWith('* ') || 
+					     trimmedLine.startsWith('+ ') || trimmedLine.startsWith('-') || 
+					     trimmedLine.startsWith('*') || trimmedLine.startsWith('+'))) {
+						lineToDelete = i
+						break
+					}
+					
+					// Strategy 3: Content after TODO/status markers and UUID
+					const contentAfterMarkers = trimmedLine
+						.replace(/^[-*+]\s*/, '')  // Remove bullets
+						.replace(/^[a-f0-9]{8}\s+/, '')  // Remove UUID
+						.replace(/^(TODO|DOING|DONE|LATER|NOW|WAITING|IN-PROGRESS)\s+/, '')  // Remove TODO status
+						.replace(/\[#[ABC]\]\s*/, '')  // Remove priority
+						.trim()
+					
+					if (contentAfterMarkers === block.content || 
+					    contentAfterMarkers.includes(block.content) || 
+					    block.content.includes(contentAfterMarkers)) {
+						lineToDelete = i
+						break
+					}
+					
+					// Strategy 4: Partial content match on lines that look like blocks
+					if ((line.includes('- ') || line.includes('* ') || line.includes('+ ')) && 
+					    (line.includes(block.content.slice(0, 10)) || 
+					     block.content.includes(trimmedLine.slice(2, 12)))) {
 						lineToDelete = i
 						break
 					}
@@ -1190,10 +1228,18 @@ server.registerTool("delete_block", {
 						}],
 					}
 				} else {
+					// Debug information to help understand why the block wasn't found
+					const filePreview = lines.slice(0, 10).map((line, idx) => `${idx + 1}: ${line}`).join('\n')
 					return {
 						content: [{
 							type: 'text',
-							text: `❌ Block content not found in file for UUID ${blockUuid.slice(0, 8)}`
+							text: `❌ Block content not found in file for UUID ${blockUuid.slice(0, 8)}\n\n` +
+								  `🔍 **Debug Info:**\n` +
+								  `- Block content: "${block.content}"\n` +
+								  `- Page: ${page.name}\n` +
+								  `- File path: ${page.path}\n` +
+								  `- File lines (first 10):\n${filePreview}\n\n` +
+								  `Try using a more recent UUID from insert_block or list_blocks.`
 						}],
 					}
 				}
