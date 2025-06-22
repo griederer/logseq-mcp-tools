@@ -1,0 +1,570 @@
+#!/usr/bin/env node
+
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+import { z } from 'zod'
+import fs from 'fs'
+import path from 'path'
+import os from 'os'
+
+const server = new McpServer({
+	name: 'Logseq Tools (Simple)',
+	version: '1.0.0',
+})
+
+// Default Logseq directories to check
+const POSSIBLE_LOGSEQ_PATHS = [
+	'/Users/gonzaloriederer/logseq-graph',
+	path.join(os.homedir(), 'Documents', 'logseq'),
+	path.join(os.homedir(), 'logseq'),
+	path.join(os.homedir(), 'Logseq'),
+	path.join(os.homedir(), 'Documents', 'Logseq'),
+]
+
+// Find Logseq directory
+function findLogseqDirectory(): string | null {
+	for (const possiblePath of POSSIBLE_LOGSEQ_PATHS) {
+		try {
+			if (fs.existsSync(possiblePath)) {
+				const pagesDir = path.join(possiblePath, 'pages')
+				const journalsDir = path.join(possiblePath, 'journals')
+				if (fs.existsSync(pagesDir) || fs.existsSync(journalsDir)) {
+					return possiblePath
+				}
+			}
+		} catch (error) {
+			// Continue to next path
+		}
+	}
+	return null
+}
+
+const LOGSEQ_PATH = findLogseqDirectory()
+
+interface LogseqBlock {
+	content: string
+	level: number
+	todo?: 'TODO' | 'DOING' | 'DONE' | 'LATER' | 'NOW'
+	scheduled?: string
+	deadline?: string
+}
+
+interface LogseqPage {
+	name: string
+	path: string
+	blocks: LogseqBlock[]
+	properties?: Record<string, any>
+	lastModified: Date
+}
+
+// Simple recursive file finder (replaces glob)
+function findMarkdownFiles(dir: string): string[] {
+	const files: string[] = []
+	if (!fs.existsSync(dir)) return files
+	
+	try {
+		const items = fs.readdirSync(dir)
+		for (const item of items) {
+			const fullPath = path.join(dir, item)
+			const stat = fs.statSync(fullPath)
+			
+			if (stat.isDirectory()) {
+				files.push(...findMarkdownFiles(fullPath))
+			} else if (item.endsWith('.md')) {
+				files.push(fullPath)
+			}
+		}
+	} catch (error) {
+		console.error(`Error reading directory ${dir}:`, error)
+	}
+	
+	return files
+}
+
+// Parse Logseq markdown blocks
+function parseBlocks(content: string): LogseqBlock[] {
+	const lines = content.split('\\n')
+	const blocks: LogseqBlock[] = []
+
+	for (const line of lines) {
+		if (line.trim() === '') continue
+		
+		const level = Math.floor((line.match(/^\\s*/)?.[0]?.length || 0) / 2)
+		let cleanLine = line.trim()
+		
+		// Remove bullet points
+		cleanLine = cleanLine.replace(/^[-*+]\\s*/, '')
+		
+		// Parse TODO status
+		let todo: LogseqBlock['todo'] | undefined
+		const todoMatch = cleanLine.match(/^(TODO|DOING|DONE|LATER|NOW)\\s+(.*)$/)
+		if (todoMatch) {
+			todo = todoMatch[1] as LogseqBlock['todo']
+			cleanLine = todoMatch[2]
+		}
+		
+		// Parse scheduled and deadline
+		const scheduledMatch = cleanLine.match(/SCHEDULED:\\s*<([^>]+)>/)
+		const deadlineMatch = cleanLine.match(/DEADLINE:\\s*<([^>]+)>/)
+		
+		const block: LogseqBlock = {
+			content: cleanLine.replace(/SCHEDULED:\\s*<[^>]+>|DEADLINE:\\s*<[^>]+>/g, '').trim(),
+			level,
+			todo,
+			scheduled: scheduledMatch?.[1],
+			deadline: deadlineMatch?.[1],
+		}
+		
+		if (block.content && !block.content.startsWith('#')) {
+			blocks.push(block)
+		}
+	}
+	
+	return blocks
+}
+
+// Read a Logseq page file
+async function readPageFile(filePath: string): Promise<LogseqPage | null> {
+	try {
+		const content = fs.readFileSync(filePath, 'utf-8')
+		const stats = fs.statSync(filePath)
+		
+		// Parse front matter if present
+		let properties: Record<string, any> = {}
+		let markdownContent = content
+		
+		if (content.startsWith('---')) {
+			const endIndex = content.indexOf('---', 3)
+			if (endIndex !== -1) {
+				const frontMatter = content.slice(3, endIndex).trim()
+				markdownContent = content.slice(endIndex + 3)
+				
+				// Simple front matter parsing
+				frontMatter.split('\\n').forEach(line => {
+					const colonIndex = line.indexOf(':')
+					if (colonIndex > 0) {
+						const key = line.slice(0, colonIndex).trim()
+						const value = line.slice(colonIndex + 1).trim()
+						properties[key] = value
+					}
+				})
+			}
+		}
+		
+		const pageName = path.basename(filePath, '.md')
+		const blocks = parseBlocks(markdownContent)
+		
+		return {
+			name: pageName,
+			path: filePath,
+			blocks,
+			properties,
+			lastModified: stats.mtime,
+		}
+	} catch (error) {
+		console.error(`Error reading page ${filePath}:`, error)
+		return null
+	}
+}
+
+// Get all pages from Logseq
+async function getAllPages(): Promise<LogseqPage[]> {
+	if (!LOGSEQ_PATH) {
+		throw new Error('Logseq directory not found. Please ensure Logseq is installed and has created a graph.')
+	}
+
+	const pages: LogseqPage[] = []
+	
+	// Read pages directory
+	const pagesDir = path.join(LOGSEQ_PATH, 'pages')
+	if (fs.existsSync(pagesDir)) {
+		const pageFiles = findMarkdownFiles(pagesDir)
+		for (const filePath of pageFiles) {
+			const page = await readPageFile(filePath)
+			if (page) pages.push(page)
+		}
+	}
+	
+	// Read journals directory
+	const journalsDir = path.join(LOGSEQ_PATH, 'journals')
+	if (fs.existsSync(journalsDir)) {
+		const journalFiles = findMarkdownFiles(journalsDir)
+		for (const filePath of journalFiles) {
+			const page = await readPageFile(filePath)
+			if (page) pages.push(page)
+		}
+	}
+	
+	return pages
+}
+
+// Create a new page
+async function createPage(pageName: string, content: string = ''): Promise<void> {
+	if (!LOGSEQ_PATH) {
+		throw new Error('Logseq directory not found')
+	}
+	
+	const pagesDir = path.join(LOGSEQ_PATH, 'pages')
+	if (!fs.existsSync(pagesDir)) {
+		fs.mkdirSync(pagesDir, { recursive: true })
+	}
+	
+	const filePath = path.join(pagesDir, `${pageName}.md`)
+	
+	let fileContent = content
+	if (!content.trim()) {
+		fileContent = `# ${pageName}\\n\\n- `
+	}
+	
+	fs.writeFileSync(filePath, fileContent)
+}
+
+// Add block to page
+async function addBlockToPage(pageName: string, blockContent: string, todo?: string): Promise<void> {
+	const pages = await getAllPages()
+	let targetPage = pages.find(p => p.name.toLowerCase() === pageName.toLowerCase())
+	
+	let filePath: string
+	if (targetPage) {
+		filePath = targetPage.path
+	} else {
+		// Create new page
+		if (!LOGSEQ_PATH) throw new Error('Logseq directory not found')
+		filePath = path.join(LOGSEQ_PATH, 'pages', `${pageName}.md`)
+	}
+	
+	let blockText = `- `
+	if (todo) blockText += `${todo} `
+	blockText += blockContent
+	
+	if (fs.existsSync(filePath)) {
+		const existingContent = fs.readFileSync(filePath, 'utf-8')
+		fs.writeFileSync(filePath, existingContent + '\\n' + blockText)
+	} else {
+		fs.writeFileSync(filePath, `# ${pageName}\\n\\n${blockText}`)
+	}
+}
+
+// Setup MCP server tools
+server.tool('get_logseq_info', {
+	description: 'Get information about the Logseq setup and test connectivity',
+	inputSchema: {
+		type: 'object',
+		properties: {},
+	},
+}, async () => {
+	try {
+		if (!LOGSEQ_PATH) {
+			return {
+				content: [{
+					type: 'text',
+					text: `❌ Logseq directory not found. Checked paths:\\n${POSSIBLE_LOGSEQ_PATHS.map(p => `- ${p}`).join('\\n')}\\n\\nPlease ensure you have created a Logseq graph or update the paths in the MCP server.`
+				}],
+			}
+		}
+		
+		const pages = await getAllPages()
+		const totalBlocks = pages.reduce((sum, page) => sum + page.blocks.length, 0)
+		const totalTodos = pages.reduce((sum, page) => 
+			sum + page.blocks.filter(block => block.todo).length, 0)
+		
+		return {
+			content: [{
+				type: 'text',
+				text: `✅ Logseq MCP Server Connected!\\n\\n` +
+					`📁 Graph Path: ${LOGSEQ_PATH}\\n` +
+					`📄 Total Pages: ${pages.length}\\n` +
+					`📝 Total Blocks: ${totalBlocks}\\n` +
+					`✅ Total TODOs: ${totalTodos}\\n\\n` +
+					`🔧 This server reads Logseq markdown files directly.\\n` +
+					`📋 Pages found: ${pages.map(p => p.name).join(', ')}`
+			}],
+		}
+	} catch (error) {
+		return {
+			content: [{
+				type: 'text',
+				text: `❌ Error: ${error instanceof Error ? error.message : 'Unknown error'}`
+			}],
+		}
+	}
+})
+
+server.tool('list_pages', {
+	description: 'List all pages in the Logseq graph',
+	inputSchema: {
+		type: 'object',
+		properties: {
+			filter: {
+				type: 'string',
+				description: 'Optional filter to search for specific pages',
+			},
+		},
+	},
+}, async (args) => {
+	try {
+		const pages = await getAllPages()
+		let filteredPages = pages
+		
+		if (args.filter) {
+			filteredPages = pages.filter(page => 
+				page.name.toLowerCase().includes(args.filter.toLowerCase())
+			)
+		}
+		
+		const pageList = filteredPages.map(page => ({
+			name: page.name,
+			blocks: page.blocks.length,
+			lastModified: page.lastModified.toISOString(),
+			todos: page.blocks.filter(block => block.todo).length
+		}))
+		
+		return {
+			content: [{
+				type: 'text',
+				text: `Found ${filteredPages.length} pages:\\n\\n` + 
+					pageList.map(p => `📄 **${p.name}**\\n   - ${p.blocks} blocks, ${p.todos} todos\\n   - Modified: ${p.lastModified.split('T')[0]}`).join('\\n\\n')
+			}],
+		}
+	} catch (error) {
+		return {
+			content: [{
+				type: 'text',
+				text: `❌ Error: ${error instanceof Error ? error.message : 'Unknown error'}`
+			}],
+		}
+	}
+})
+
+server.tool('read_page', {
+	description: 'Read the content of a specific page',
+	inputSchema: {
+		type: 'object',
+		properties: {
+			pageName: {
+				type: 'string',
+				description: 'Name of the page to read',
+			},
+		},
+		required: ['pageName'],
+	},
+}, async (args) => {
+	try {
+		const pages = await getAllPages()
+		const page = pages.find(p => p.name.toLowerCase() === args.pageName.toLowerCase())
+		
+		if (!page) {
+			return {
+				content: [{
+					type: 'text',
+					text: `❌ Page "${args.pageName}" not found.\\n\\n📋 Available pages: ${pages.map(p => p.name).join(', ')}`
+				}],
+			}
+		}
+		
+		let content = `# 📄 ${page.name}\\n\\n`
+		
+		if (page.properties && Object.keys(page.properties).length > 0) {
+			content += '**Properties:**\\n'
+			for (const [key, value] of Object.entries(page.properties)) {
+				content += `- ${key}: ${value}\\n`
+			}
+			content += '\\n'
+		}
+		
+		content += '**Content:**\\n'
+		for (const block of page.blocks) {
+			const indent = '  '.repeat(block.level)
+			let line = `${indent}- `
+			
+			if (block.todo) {
+				const emoji = block.todo === 'DONE' ? '✅' : block.todo === 'DOING' ? '🔄' : '⭕'
+				line += `${emoji} **${block.todo}** `
+			}
+			
+			line += block.content
+			
+			if (block.scheduled) {
+				line += ` 📅 ${block.scheduled}`
+			}
+			
+			if (block.deadline) {
+				line += ` ⏰ ${block.deadline}`
+			}
+			
+			content += line + '\\n'
+		}
+		
+		return {
+			content: [{
+				type: 'text',
+				text: content
+			}],
+		}
+	} catch (error) {
+		return {
+			content: [{
+				type: 'text',
+				text: `❌ Error: ${error instanceof Error ? error.message : 'Unknown error'}`
+			}],
+		}
+	}
+})
+
+server.tool('get_todos', {
+	description: 'Get all TODO items from the graph',
+	inputSchema: {
+		type: 'object',
+		properties: {
+			status: {
+				type: 'string',
+				enum: ['TODO', 'DOING', 'DONE', 'LATER', 'NOW'],
+				description: 'Filter by TODO status',
+			},
+			scheduled: {
+				type: 'boolean',
+				description: 'Only show scheduled todos',
+				default: false,
+			},
+		},
+	},
+}, async (args) => {
+	try {
+		const pages = await getAllPages()
+		const todos: { page: string; block: LogseqBlock }[] = []
+		
+		for (const page of pages) {
+			for (const block of page.blocks) {
+				if (!block.todo) continue
+				if (args.status && block.todo !== args.status) continue
+				if (args.scheduled && !block.scheduled) continue
+				
+				todos.push({ page: page.name, block })
+			}
+		}
+		
+		const groupedByStatus = todos.reduce((acc, todo) => {
+			const status = todo.block.todo!
+			if (!acc[status]) acc[status] = []
+			acc[status].push(todo)
+			return acc
+		}, {} as Record<string, typeof todos>)
+		
+		let summary = `📋 Found ${todos.length} total TODOs:\\n\\n`
+		
+		for (const [status, statusTodos] of Object.entries(groupedByStatus)) {
+			const emoji = status === 'DONE' ? '✅' : status === 'DOING' ? '🔄' : status === 'NOW' ? '🔥' : '⭕'
+			summary += `${emoji} **${status}** (${statusTodos.length}):\\n`
+			
+			for (const todo of statusTodos) {
+				let line = `  - **${todo.page}**: ${todo.block.content}`
+				if (todo.block.scheduled) line += ` 📅 ${todo.block.scheduled}`
+				if (todo.block.deadline) line += ` ⏰ ${todo.block.deadline}`
+				summary += line + '\\n'
+			}
+			summary += '\\n'
+		}
+		
+		return {
+			content: [{
+				type: 'text',
+				text: summary
+			}],
+		}
+	} catch (error) {
+		return {
+			content: [{
+				type: 'text',
+				text: `❌ Error: ${error instanceof Error ? error.message : 'Unknown error'}`
+			}],
+		}
+	}
+})
+
+server.tool('add_todo', {
+	description: 'Add a TODO item to a page',
+	inputSchema: {
+		type: 'object',
+		properties: {
+			pageName: {
+				type: 'string',
+				description: 'Page to add the TODO to',
+			},
+			content: {
+				type: 'string',
+				description: 'Content of the TODO item',
+			},
+			status: {
+				type: 'string',
+				enum: ['TODO', 'DOING', 'LATER', 'NOW'],
+				description: 'TODO status',
+				default: 'TODO',
+			},
+		},
+		required: ['pageName', 'content'],
+	},
+}, async (args) => {
+	try {
+		await addBlockToPage(args.pageName, args.content, args.status || 'TODO')
+		
+		return {
+			content: [{
+				type: 'text',
+				text: `✅ Added ${args.status || 'TODO'} to "${args.pageName}": ${args.content}`
+			}],
+		}
+	} catch (error) {
+		return {
+			content: [{
+				type: 'text',
+				text: `❌ Error adding TODO: ${error instanceof Error ? error.message : 'Unknown error'}`
+			}],
+		}
+	}
+})
+
+server.tool('create_page', {
+	description: 'Create a new page in Logseq',
+	inputSchema: {
+		type: 'object',
+		properties: {
+			pageName: {
+				type: 'string',
+				description: 'Name of the page to create',
+			},
+			content: {
+				type: 'string',
+				description: 'Content for the page (optional)',
+				default: '',
+			},
+		},
+		required: ['pageName'],
+	},
+}, async (args) => {
+	try {
+		await createPage(args.pageName, args.content || '')
+		
+		return {
+			content: [{
+				type: 'text',
+				text: `✅ Created page "${args.pageName}" successfully!`
+			}],
+		}
+	} catch (error) {
+		return {
+			content: [{
+				type: 'text',
+				text: `❌ Error creating page: ${error instanceof Error ? error.message : 'Unknown error'}`
+			}],
+		}
+	}
+})
+
+async function main() {
+	const transport = new StdioServerTransport()
+	await server.connect(transport)
+	console.error('Logseq MCP Server (Simple) running on stdio')
+	console.error(`Logseq path: ${LOGSEQ_PATH || 'Not found'}`)
+}
+
+main().catch(console.error)
