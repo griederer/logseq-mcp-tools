@@ -1217,14 +1217,46 @@ server.registerTool("delete_block", {
 				}
 				
 				if (lineToDelete !== -1) {
+					// Store original content for verification
+					const originalLine = lines[lineToDelete]
+					
 					// Remove the line and save
 					lines.splice(lineToDelete, 1)
-					fs.writeFileSync(page.path, lines.join('\n'))
+					
+					// Write with explicit encoding and sync
+					const newContent = lines.join('\n')
+					fs.writeFileSync(page.path, newContent, 'utf-8')
+					
+					// Force filesystem sync to ensure write is complete
+					try {
+						const fd = fs.openSync(page.path, 'r+')
+						fs.fsyncSync(fd)
+						fs.closeSync(fd)
+					} catch (syncError) {
+						// Sync failed but write might have succeeded
+					}
+					
+					// Small delay to ensure filesystem consistency
+					await new Promise(resolve => setTimeout(resolve, 50))
+					
+					// Verify deletion by re-reading file
+					const verificationContent = fs.readFileSync(page.path, 'utf-8')
+					const deletionVerified = !verificationContent.includes(originalLine.trim())
+					
+					// Additional verification: check if UUID is gone
+					const uuidStillExists = verificationContent.includes(block.uuid.slice(0, 8))
+					const fullVerification = deletionVerified && !uuidStillExists
 					
 					return {
 						content: [{
 							type: 'text',
-							text: `✅ Successfully deleted block "${block.content}"\n🆔 UUID: ${block.uuid.slice(0, 8)}\n📄 From page: ${page.name}`
+							text: `✅ Successfully deleted block "${block.content}"\n` +
+								  `🆔 UUID: ${block.uuid.slice(0, 8)}\n` +
+								  `📄 From page: ${page.name}\n` +
+								  `📝 Original line: "${originalLine.trim()}"\n` +
+								  `✔️ Line deletion verified: ${deletionVerified ? 'YES' : 'NO'}\n` +
+								  `🔍 UUID removal verified: ${!uuidStillExists ? 'YES' : 'NO'}\n` +
+								  `🎯 Full verification: ${fullVerification ? 'COMPLETE SUCCESS' : 'POTENTIAL ISSUE'}`
 						}],
 					}
 				} else {
