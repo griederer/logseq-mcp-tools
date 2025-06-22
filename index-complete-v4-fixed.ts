@@ -1152,23 +1152,48 @@ server.registerTool("delete_block", {
 	try {
 		const pages = await getAllPages()
 		
+		// Find the block by UUID across all pages
 		for (const page of pages) {
-			const fileContent = fs.readFileSync(page.path, 'utf-8')
-			const lines = fileContent.split('\n')
+			const blockIndex = page.blocks.findIndex(block => {
+				const blockShortUuid = block.uuid.slice(0, 8)
+				return block.uuid === blockUuid || 
+				       blockShortUuid === blockUuid || 
+				       block.uuid.startsWith(blockUuid)
+			})
 			
-			for (let i = 0; i < lines.length; i++) {
-				// Support both full and partial UUID lookup in file content
-				const lineIncludesUuid = lines[i].includes(blockUuid) || 
-					(blockUuid.length >= 8 && lines[i].includes(blockUuid.slice(0, 8))) ||
-					(blockUuid.length <= 8 && lines[i].includes(blockUuid))
-				if (lineIncludesUuid) {
-					lines.splice(i, 1)
+			if (blockIndex !== -1) {
+				const block = page.blocks[blockIndex]
+				const fileContent = fs.readFileSync(page.path, 'utf-8')
+				const lines = fileContent.split('\n')
+				
+				// Find the line containing this block's content
+				let lineToDelete = -1
+				for (let i = 0; i < lines.length; i++) {
+					const line = lines[i].trim()
+					// Look for the block content in the file
+					if (line.includes(block.content) && 
+					    (line.startsWith('- ') || line.startsWith('* ') || line.startsWith('+ '))) {
+						lineToDelete = i
+						break
+					}
+				}
+				
+				if (lineToDelete !== -1) {
+					// Remove the line and save
+					lines.splice(lineToDelete, 1)
 					fs.writeFileSync(page.path, lines.join('\n'))
 					
 					return {
 						content: [{
 							type: 'text',
-							text: `✅ Successfully deleted block ${blockUuid.slice(0, 8)}\n📄 From page: ${page.name}`
+							text: `✅ Successfully deleted block "${block.content}"\n🆔 UUID: ${block.uuid.slice(0, 8)}\n📄 From page: ${page.name}`
+						}],
+					}
+				} else {
+					return {
+						content: [{
+							type: 'text',
+							text: `❌ Block content not found in file for UUID ${blockUuid.slice(0, 8)}`
 						}],
 					}
 				}
@@ -1178,7 +1203,7 @@ server.registerTool("delete_block", {
 		return {
 			content: [{
 				type: 'text',
-				text: `❌ Block with UUID "${blockUuid}" not found`
+				text: `❌ Block with UUID "${blockUuid}" not found in any page`
 			}],
 		}
 	} catch (error) {
