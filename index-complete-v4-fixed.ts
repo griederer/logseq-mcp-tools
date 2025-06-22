@@ -1173,9 +1173,23 @@ server.registerTool("delete_block", {
 				for (let i = 0; i < lines.length; i++) {
 					const line = lines[i]
 					const trimmedLine = line.trim()
-					
-					// Strategy 1: Look for UUID at the beginning (most reliable for new blocks)
 					const shortUuid = block.uuid.slice(0, 8)
+					
+					// Strategy 1: Look for exact block content anywhere in bullet point lines
+					if ((line.includes('- ') || line.includes('* ') || line.includes('+ ')) &&
+					    line.includes(block.content)) {
+						lineToDelete = i
+						break
+					}
+					
+					// Strategy 2: Look for UUID anywhere in the line (most aggressive)
+					if (line.includes(shortUuid) && 
+					    (line.includes('- ') || line.includes('* ') || line.includes('+ '))) {
+						lineToDelete = i
+						break
+					}
+					
+					// Strategy 3: Look for UUID at the beginning (most reliable for new blocks)
 					if (trimmedLine.startsWith(`- ${shortUuid} `) || 
 					    trimmedLine.startsWith(`* ${shortUuid} `) || 
 					    trimmedLine.startsWith(`+ ${shortUuid} `)) {
@@ -1183,7 +1197,7 @@ server.registerTool("delete_block", {
 						break
 					}
 					
-					// Strategy 2: Exact content match with bullet points
+					// Strategy 4: Exact content match with bullet points (trimmed version)
 					if (trimmedLine.includes(block.content) && 
 					    (trimmedLine.startsWith('- ') || trimmedLine.startsWith('* ') || 
 					     trimmedLine.startsWith('+ ') || trimmedLine.startsWith('-') || 
@@ -1192,7 +1206,7 @@ server.registerTool("delete_block", {
 						break
 					}
 					
-					// Strategy 3: Content after TODO/status markers and UUID
+					// Strategy 5: Content after TODO/status markers and UUID
 					const contentAfterMarkers = trimmedLine
 						.replace(/^[-*+]\s*/, '')  // Remove bullets
 						.replace(/^[a-f0-9]{8}\s+/, '')  // Remove UUID
@@ -1207,7 +1221,7 @@ server.registerTool("delete_block", {
 						break
 					}
 					
-					// Strategy 4: Partial content match on lines that look like blocks
+					// Strategy 6: Partial content match on lines that look like blocks
 					if ((line.includes('- ') || line.includes('* ') || line.includes('+ ')) && 
 					    (line.includes(block.content.slice(0, 10)) || 
 					     block.content.includes(trimmedLine.slice(2, 12)))) {
@@ -1260,18 +1274,27 @@ server.registerTool("delete_block", {
 						}],
 					}
 				} else {
-					// Debug information to help understand why the block wasn't found
-					const filePreview = lines.slice(0, 10).map((line, idx) => `${idx + 1}: ${line}`).join('\n')
+					// Enhanced debug information to understand exactly why the block wasn't found
+					const filePreview = lines.map((line, idx) => `${idx + 1}: ${line}`).join('\n')
+					const shortUuid = block.uuid.slice(0, 8)
+					
+					// Check which lines contain the UUID or content
+					const uuidMatches = lines.map((line, idx) => line.includes(shortUuid) ? `Line ${idx + 1}: ${line}` : null).filter(Boolean)
+					const contentMatches = lines.map((line, idx) => line.includes(block.content) ? `Line ${idx + 1}: ${line}` : null).filter(Boolean)
+					
 					return {
 						content: [{
 							type: 'text',
-							text: `❌ Block content not found in file for UUID ${blockUuid.slice(0, 8)}\n\n` +
-								  `🔍 **Debug Info:**\n` +
+							text: `❌ Block line not found in file for UUID ${blockUuid.slice(0, 8)}\n\n` +
+								  `🔍 **Extended Debug Info:**\n` +
 								  `- Block content: "${block.content}"\n` +
+								  `- Block UUID: ${block.uuid}\n` +
+								  `- Short UUID: ${shortUuid}\n` +
 								  `- Page: ${page.name}\n` +
-								  `- File path: ${page.path}\n` +
-								  `- File lines (first 10):\n${filePreview}\n\n` +
-								  `Try using a more recent UUID from insert_block or list_blocks.`
+								  `- File path: ${page.path}\n\n` +
+								  `📝 **UUID matches in file:**\n${uuidMatches.length > 0 ? uuidMatches.join('\n') : 'None found'}\n\n` +
+								  `📝 **Content matches in file:**\n${contentMatches.length > 0 ? contentMatches.join('\n') : 'None found'}\n\n` +
+								  `📄 **Full file content:**\n${filePreview}`
 						}],
 					}
 				}
